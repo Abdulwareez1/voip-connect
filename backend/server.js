@@ -2,6 +2,7 @@ const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const cors = require('cors');
+const path = require('path');
 
 const app = express();
 const server = http.createServer(app);
@@ -10,6 +11,15 @@ const io = new Server(server, {
 });
 
 app.use(cors());
+app.use(express.json());
+
+// Serve Frontend Static Files
+app.use(express.static(path.join(__dirname, '../frontend')));
+
+// Default Route - Serve index.html
+app.get('/', (req, res) => {
+  res.sendFile(path.join(__dirname, '../frontend/index.html'));
+});
 
 const users = new Map();
 const onlineUsers = new Map();
@@ -57,5 +67,5 @@ io.on('connection', (socket) => {
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+  console.log(`🚀 Server running on port ${PORT}`);
 });
