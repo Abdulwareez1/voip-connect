@@ -17,30 +17,65 @@
     <h1 class="text-5xl font-bold title mb-2">VoIP Connect</h1>
     <p class="text-gray-400 mb-10">Real Voice Calls</p>
 
+    <!-- Login -->
     <div id="login-screen">
-      <input id="username" type="text" placeholder="Enter username" class="w-full bg-gray-900 border border-gray-700 rounded-2xl px-6 py-4 text-lg mb-6">
-      <button onclick="registerUser()" class="w-full bg-emerald-600 hover:bg-emerald-500 py-4 rounded-2xl font-semibold text-lg">Join Network</button>
+      <input id="username" type="text" placeholder="Enter username" 
+             class="w-full bg-gray-900 border border-gray-700 rounded-2xl px-6 py-4 text-lg mb-6">
+      <button onclick="registerUser()" 
+              class="w-full bg-emerald-600 hover:bg-emerald-500 py-4 rounded-2xl font-semibold text-lg">
+        Join Network
+      </button>
     </div>
 
+    <!-- Main App -->
     <div id="main-app" class="hidden">
-      <h2 class="text-xl font-semibold mb-4 flex items-center justify-center gap-2"><i class="fas fa-users"></i> Online Users</h2>
+      <h2 class="text-xl font-semibold mb-4 flex items-center justify-center gap-2">
+        <i class="fas fa-users"></i> Online Users
+      </h2>
       <div id="users-list" class="space-y-3"></div>
     </div>
   </div>
 
-  <!-- Modals and Call Screen (same as before) -->
-  <!-- I kept it short for now. You can add full modals later if needed -->
+  <!-- Incoming Call Modal -->
+  <div id="incoming-modal" class="hidden fixed inset-0 bg-black/90 flex items-center justify-center z-50">
+    <div class="bg-gray-900 p-8 rounded-3xl text-center w-80">
+      <p class="text-red-400 text-sm mb-2">Incoming Call</p>
+      <p id="incoming-from" class="text-3xl font-bold mb-8"></p>
+      <div class="flex gap-4">
+        <button onclick="rejectCall()" class="flex-1 py-4 bg-gray-700 hover:bg-gray-600 rounded-2xl">Reject</button>
+        <button onclick="acceptCall()" class="flex-1 py-4 bg-emerald-600 hover:bg-emerald-500 rounded-2xl font-semibold">Accept</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Call Screen -->
+  <div id="call-screen" class="hidden fixed inset-0 bg-black/95 flex items-center justify-center z-50">
+    <div class="text-center">
+      <div id="call-status" class="text-2xl mb-6"></div>
+      <div id="call-timer" class="text-6xl font-mono mb-12 text-emerald-400">00:00</div>
+      <div class="flex gap-8 justify-center">
+        <button onclick="toggleMute()" class="w-16 h-16 bg-gray-800 hover:bg-gray-700 rounded-2xl text-3xl">
+          <i id="mute-icon" class="fas fa-microphone"></i>
+        </button>
+        <button onclick="endCall()" class="w-20 h-20 bg-red-600 hover:bg-red-500 rounded-full text-4xl">
+          <i class="fas fa-phone-slash"></i>
+        </button>
+      </div>
+    </div>
+  </div>
 
   <script>
-    let socket, username, peerConnection, localStream, remoteUsername = '';
+    let socket, username, peerConnection, localStream, currentCallId = '', isMuted = false, timerInterval;
+    let remoteUsername = '';
+    let incomingOffer = null;
 
     const iceConfig = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
 
     function registerUser() {
       username = document.getElementById('username').value.trim();
-      if (!username) return alert("Enter username");
+      if (!username) return alert("Please enter a username");
 
-      socket = io();   // Works both locally and on deployment
+      socket = io();
 
       socket.on('connect', () => {
         socket.emit('register', username);
@@ -49,7 +84,10 @@
       });
 
       socket.on('users-update', updateUsersList);
-      // Add other listeners (offer, answer, etc.) as before
+      socket.on('offer', handleOffer);
+      socket.on('answer', handleAnswer);
+      socket.on('ice-candidate', handleIceCandidate);
+      socket.on('call-ended', endCall);
     }
 
     function updateUsersList(users) {
@@ -57,95 +95,71 @@
       list.innerHTML = '';
       users.filter(u => u !== username).forEach(user => {
         const div = document.createElement('div');
-        div.className = "bg-gray-900 p-4 rounded-2xl flex justify-between items-center";
+        div.className = "bg-gray-900 p-4 rounded-2xl flex justify-between items-center hover:bg-gray-800";
         div.innerHTML = `
           <div class="flex items-center gap-3">
-            <div class="w-10 h-10 bg-emerald-500 rounded-2xl flex items-center justify-center">👤</div>
-            <div><p class="font-medium">${user}</p></div>
+            <div class="w-10 h-10 bg-emerald-500 rounded-2xl flex items-center justify-center text-xl">👤</div>
+            <div class="text-left"><p class="font-medium">${user}</p></div>
           </div>
-          <button onclick="startCall('${user}')" class="bg-emerald-600 px-6 py-2 rounded-xl">Call</button>
+          <button onclick="startCall('${user}')" class="bg-emerald-600 hover:bg-emerald-500 px-6 py-2 rounded-xl">Call</button>
         `;
         list.appendChild(div);
       });
     }
 
-    // Caller Side
     async function startCall(to) {
       remoteUsername = to;
       currentCallId = 'call-' + Date.now();
-      
       await createPeerConnection();
+
       const offer = await peerConnection.createOffer();
       await peerConnection.setLocalDescription(offer);
-      
-      socket.emit('offer', { to, offer, callId: currentCallId });
+      socket.emit('offer', { to, offer });
       showCallScreen(`Calling ${to}...`);
     }
 
     async function createPeerConnection() {
-  peerConnection = new RTCPeerConnection(iceConfig);
+      peerConnection = new RTCPeerConnection(iceConfig);
 
-  localStream = await navigator.mediaDevices.getUserMedia({ 
-    audio: {
-      echoCancellation: true,
-      noiseSuppression: true,
-      autoGainControl: true
-    } 
-  });
+      localStream = await navigator.mediaDevices.getUserMedia({ 
+        audio: { echoCancellation: true, noiseSuppression: true }
+      });
+      localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
 
-  localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
+      peerConnection.ontrack = (event) => {
+        const audio = new Audio();
+        audio.srcObject = event.streams[0];
+        audio.play();
+      };
 
-  peerConnection.ontrack = (event) => {
-    const audio = new Audio();
-    audio.srcObject = event.streams[0];
-    audio.volume = 1.0;
-    audio.play().catch(e => console.error("Audio play error:", e));
-  };
-
-  peerConnection.onicecandidate = (event) => {
-    if (event.candidate && remoteUsername) {
-      socket.emit('ice-candidate', { to: remoteUsername, candidate: event.candidate });
-    }
-  };
-}
-
-    // Callee Side
-    function handleIncomingCall({ from, callId }) {
-      currentCallId = callId;
-      remoteUsername = from;
-      document.getElementById('incoming-from').textContent = from;
-      document.getElementById('incoming-modal').classList.remove('hidden');
+      peerConnection.onicecandidate = (event) => {
+        if (event.candidate && remoteUsername) {
+          socket.emit('ice-candidate', { to: remoteUsername, candidate: event.candidate });
+        }
+      };
     }
 
-    async function handleOffer({ from, offer, callId }) {
-      incomingOffer = offer;        // ← Store the offer
+    function handleOffer({ from, offer }) {
       remoteUsername = from;
-      currentCallId = callId;
+      incomingOffer = offer;
       document.getElementById('incoming-from').textContent = from;
       document.getElementById('incoming-modal').classList.remove('hidden');
     }
 
     async function acceptCall() {
       document.getElementById('incoming-modal').classList.add('hidden');
-      
       await createPeerConnection();
-      
-      if (incomingOffer) {
-        await peerConnection.setRemoteDescription(new RTCSessionDescription(incomingOffer));
-      }
+      await peerConnection.setRemoteDescription(new RTCSessionDescription(incomingOffer));
       
       const answer = await peerConnection.createAnswer();
       await peerConnection.setLocalDescription(answer);
-      
-      socket.emit('answer', { to: remoteUsername, answer, callId: currentCallId });
+      socket.emit('answer', { to: remoteUsername, answer });
       
       showCallScreen('Connected');
     }
 
     async function handleAnswer({ answer }) {
-      if (peerConnection) {
-        await peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
-      }
+      if (peerConnection) await peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
     }
 
     function handleIceCandidate({ candidate }) {
@@ -163,8 +177,8 @@
       clearInterval(timerInterval);
       timerInterval = setInterval(() => {
         seconds++;
-        const min = String(Math.floor(seconds/60)).padStart(2,'0');
-        const sec = String(seconds%60).padStart(2,'0');
+        const min = String(Math.floor(seconds/60)).padStart(2, '0');
+        const sec = String(seconds % 60).padStart(2, '0');
         document.getElementById('call-timer').textContent = `${min}:${sec}`;
       }, 1000);
     }
@@ -176,12 +190,10 @@
     }
 
     function endCall() {
-      if (localStream) localStream.getTracks().forEach(track => track.stop());
+      if (localStream) localStream.getTracks().forEach(t => t.stop());
       if (peerConnection) peerConnection.close();
-      
       document.getElementById('call-screen').classList.add('hidden');
       clearInterval(timerInterval);
-      
       if (socket && remoteUsername) socket.emit('end-call', { to: remoteUsername });
     }
 
